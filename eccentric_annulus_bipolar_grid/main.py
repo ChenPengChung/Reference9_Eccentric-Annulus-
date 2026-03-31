@@ -292,6 +292,20 @@ def run_interactive():
     print("    >= 2.5    = UNSTABLE (omega > 2.0, WILL DIVERGE)")
     GAMMA = ask_float("GAMMA_eta", default=1.0, lo=0.0, hi=10.0)
 
+    # Blocking confirmation for known-unstable GAMMA
+    if GAMMA >= 2.5:
+        print()
+        print("  !! DANGER: GAMMA >= 2.5 is KNOWN UNSTABLE (omega > 2.0) !!")
+        print("  !! The LBM simulation WILL DIVERGE with this setting.    !!")
+        confirm = ask_yes_no("Proceed anyway?", default_yes=False)
+        if not confirm:
+            print("  Reducing GAMMA to 1.0 (recommended).")
+            GAMMA = 1.0
+    elif GAMMA >= 2.0:
+        print()
+        print("  ** WARNING: GAMMA >= 2.0 is MARGINAL (omega ~2.0).")
+        print("  ** Consider reducing to GAMMA <= 1.5 for safety.")
+
     print()
     print("  ALPHA -- Radial clustering symmetry")
     print("    0.5  = symmetric (inner + outer walls equal) (RECOMMENDED)")
@@ -355,6 +369,16 @@ def run_interactive():
 
     print("  [5/6] GILBM stability check ...")
     gen.stability_report()
+
+    # Post-generation stability gate
+    if result["stability"]["status"] == "UNSTABLE":
+        print("  !! POST-GENERATION CHECK: omega > 2.0 -- GRID IS UNSTABLE !!")
+        print("  !! Reduce GAMMA or grid resolution before using in GILBM.  !!")
+        abort = ask_yes_no("Export anyway (grid will diverge in LBM)?",
+                           default_yes=False)
+        if not abort:
+            print("  Export aborted. Adjust GAMMA and re-run.")
+            return
 
     # Export
     print("  [6/6] Exporting files ...")

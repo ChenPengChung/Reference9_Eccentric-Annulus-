@@ -80,6 +80,8 @@ def bipolar_to_cartesian_explicit(xi, eta, c, gamma_shift):
         Physical Cartesian coordinates.
     """
     denom = np.cos(xi) + np.cosh(eta)
+    # Protect against pole singularity (xi=+-pi, eta=0 -> denom=0)
+    denom = np.where(np.abs(denom) > 1e-30, denom, np.sign(denom) * 1e-30)
     x = c * np.sin(xi) / denom
     y = c * np.sinh(eta) / denom - gamma_shift
     return x, y
@@ -121,9 +123,10 @@ def cartesian_to_bipolar(x, y, c, gamma_shift):
     # e^(2*eta) = [x^2 + (y'+c)^2] / [x^2 + (y'-c)^2]
     num = x**2 + (yp + c)**2
     den = x**2 + (yp - c)**2
-    # Protect against log(0) at the poles
-    ratio = np.where(den > 1e-30, num / den, 1e30)
-    eta = 0.5 * np.log(ratio)
+    # Protect against log(0) at the poles (x=0, y'=+-c)
+    den = np.where(den > 1e-30, den, 1e-30)
+    num = np.where(num > 1e-30, num, 1e-30)
+    eta = 0.5 * np.log(num / den)
 
     # tan(xi) = 2*x*c / (c^2 - x^2 - y'^2)
     xi = np.arctan2(2 * x * c, c**2 - x**2 - yp**2)
@@ -160,8 +163,10 @@ def verify_roundtrip(xi_orig, eta_orig, c, gamma_shift, tol=1e-10):
     max_err_xi = np.max(np.abs(dxi))
     max_err_eta = np.max(np.abs(eta_rec - eta_orig))
 
+    passed = (max_err_xi < tol) and (max_err_eta < tol)
+
     return {
         "max_err_xi": max_err_xi,
         "max_err_eta": max_err_eta,
-        "passed": max(max_err_xi, max_err_eta) <= tol,
+        "passed": passed,
     }

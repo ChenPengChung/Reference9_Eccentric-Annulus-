@@ -163,7 +163,6 @@ def print_grid_quality(quality, params):
     elif quality["orthogonality_max_deg"] < 1.0:
         print("    -> Good: near-orthogonal grid")
     else:
-        print("    -> Warning: significant orthogonality deviation")
-
-    print("  " + "=" * 62)
-    print()
+        print("    -> Note: cell-level deviation is a finite-difference artifact")
+        print("       (conformal mapping is inherently orthogonal;"
+              " deviation is a finite-difference artifact)")

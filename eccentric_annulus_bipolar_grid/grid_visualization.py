@@ -125,7 +125,7 @@ def plot_scale_factor_field(x, y, h, savepath=None, figsize=(10, 9)):
 
     fig, ax = plt.subplots(figsize=figsize)
     cf = ax.contourf(x, y, h, levels=50, cmap="viridis")
-    plt.colorbar(cf, ax=ax, label="h = c / (cosh(eta) - cos(xi))")
+    plt.colorbar(cf, ax=ax, label="h = c / (cos(xi) + cosh(eta))")
     ax.set_aspect("equal")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -164,10 +164,10 @@ def plot_grid_quality_map(x, y, quality_field, title="Quality",
 
     fig, ax = plt.subplots(figsize=figsize)
     nj, ni = quality_field.shape
-    # Quality fields are cell-centered (nj-1, ni-1), use pcolormesh
-    # Need corner coordinates for cell edges
-    cf = ax.pcolormesh(x[:nj, :ni], y[:nj, :ni], quality_field,
-                       cmap=cmap, shading="auto")
+    # Quality fields are cell-centered (nj-1, ni-1); node grid is (nj+1, ni+1).
+    # Use the full node grid as corner coordinates for pcolormesh.
+    cf = ax.pcolormesh(x[:nj + 1, :ni + 1], y[:nj + 1, :ni + 1],
+                       quality_field, cmap=cmap, shading="flat")
     plt.colorbar(cf, ax=ax, label=title)
     ax.set_aspect("equal")
     ax.set_xlabel("x")

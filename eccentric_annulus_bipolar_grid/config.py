@@ -30,9 +30,15 @@ def parse_config(filepath):
                 key, val = line.split("=", 1)
                 key = key.strip().upper()
                 val = val.strip()
-                # Strip inline comments
-                if "#" in val:
-                    val = val[:val.index("#")].strip()
+                # Strip inline comments (but not '#' inside numbers)
+                # Find first '#' that's preceded by whitespace or is at start
+                comment_idx = None
+                for ci, ch in enumerate(val):
+                    if ch == '#' and (ci == 0 or val[ci - 1] in ' \t'):
+                        comment_idx = ci
+                        break
+                if comment_idx is not None:
+                    val = val[:comment_idx].strip()
                 try:
                     if "." in val or "e" in val.lower():
                         config[key] = float(val)
@@ -120,19 +126,32 @@ def validate_config(config):
     if n_eta < 5:
         raise ValueError(f"N_ETA must be >= 5, got {n_eta}")
 
+    stretch_xi = config.get("STRETCH_XI", 0.0)
+    stretch_eta = config.get("STRETCH_ETA", 1.0)
+    alpha_s = config.get("ALPHA_S", 0.5)
+    re = config.get("RE", 100)
+    cfl = config.get("CFL", 0.5)
+
+    if stretch_xi < 0:
+        raise ValueError(f"STRETCH_XI must be >= 0, got {stretch_xi}")
+    if stretch_eta < 0:
+        raise ValueError(f"STRETCH_ETA must be >= 0, got {stretch_eta}")
+    if not (0 < alpha_s < 1):
+        raise ValueError(f"ALPHA_S must be in (0, 1), got {alpha_s}")
+    if re <= 0:
+        raise ValueError(f"RE must be > 0, got {re}")
+    if cfl <= 0 or cfl > 1:
+        raise ValueError(f"CFL must be in (0, 1], got {cfl}")
+
     return {
         "R1": r1,
         "R2": r2,
         "eccentricity": e,
-        "epsilon": e / (r2 - r1),
-        "N_xi": int(n_xi),
-        "N_eta": int(n_eta),
-        "stretch_xi": config.get("STRETCH_XI", 0.0),
-        "stretch_eta": config.get("STRETCH_ETA", 0.0),
-        "alpha_s": config.get("ALPHA_S", 0.5),
-        "output_dir": config.get("OUTPUT_DIR", "."),
-        "prefix": config.get("PREFIX", "eccentric_annulus"),
-        "Uref": config.get("UREF", 0.05),
-        "Re": config.get("RE", 100),
-        "CFL": config.get("CFL", 0.5),
+        "N_XI": n_xi,
+        "N_ETA": n_eta,
+        "STRETCH_XI": stretch_xi,
+        "STRETCH_ETA": stretch_eta,
+        "ALPHA_S": alpha_s,
+        "RE": re,
+        "CFL": cfl,
     }

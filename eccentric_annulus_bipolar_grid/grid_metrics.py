@@ -4,10 +4,14 @@ Grid Metrics: Jacobian, Metric Tensor, Scale Factors, Christoffel Symbols
 Critical for GILBM: the curvilinear grid metrics determine how the LBM
 collision-streaming operates on the non-uniform mesh.
 
-For bipolar coordinates, the mapping is conformal, so:
-  - The scale factor h = c / (cosh(eta) - cos(xi)) characterises everything
+For the tan-based bipolar mapping z = c * tan(zeta/2):
+  - The scale factor h = c / (cos(xi) + cosh(eta))
   - The metric tensor is diagonal: g11 = g22 = h^2, g12 = 0
   - The Jacobian determinant |J| = h^2
+
+NOTE: The PDF document uses a different convention z = ic*cot(zeta/2) with
+scale factor h_pdf = c / (cosh(eta) - cos(xi)). The code uses the tan-based
+mapping, so the denominator has a PLUS sign: cos(xi) + cosh(eta).
 """
 
 import numpy as np
@@ -15,12 +19,14 @@ import numpy as np
 
 def compute_scale_factor(xi, eta, c):
     """
-    Bipolar coordinate scale factor.
+    Bipolar coordinate scale factor for z = c * tan(zeta/2).
 
-        h(xi, eta) = c / (cosh(eta) - cos(xi))
+        h(xi, eta) = c / (cos(xi) + cosh(eta))
 
-    This is the key metric for LBM: it relates lattice spacing
-    to physical spacing at each grid point.
+    Derivation:
+        |dz/dzeta| = (c/2) / |cos(zeta/2)|^2
+        |cos((xi+i*eta)/2)|^2 = (cos(xi) + cosh(eta)) / 2
+        h = |dz/dzeta| = c / (cos(xi) + cosh(eta))
 
     Parameters
     ----------
@@ -34,7 +40,10 @@ def compute_scale_factor(xi, eta, c):
     h : ndarray
         Scale factor at each grid point.
     """
-    return c / (np.cosh(eta) - np.cos(xi))
+    denom = np.cos(xi) + np.cosh(eta)
+    # Protect against zero at poles (xi=+-pi, eta=0)
+    denom = np.where(np.abs(denom) > 1e-30, denom, 1e-30)
+    return c / denom
 
 
 def compute_jacobian_analytic(xi, eta, c):
@@ -45,16 +54,10 @@ def compute_jacobian_analytic(xi, eta, c):
         dz/dzeta = (c/2) / cos^2(zeta/2)
 
     For the Jacobian matrix J = [[dx/dxi, dx/deta], [dy/dxi, dy/deta]]:
+        dz/dxi  = dz/dzeta * 1
+        dz/deta = dz/dzeta * i
 
-    Since the mapping is conformal, we can use the Cauchy-Riemann equations.
-    Let w = u + iv = f(zeta) where zeta = xi + i*eta:
-        dx/dxi = dy/deta = Re(dw/dzeta)    (= h_x term)
-        dx/deta = -dy/dxi = Im(dw/dzeta)   (Cauchy-Riemann)
-
-    But it's simpler to compute via the scale factor h:
-        |dz/dzeta| = h = c / (cosh(eta) - cos(xi))
-
-    For conformal mappings, the Jacobian determinant |J| = h^2.
+    For conformal mappings, |J| = h^2 where h = c / (cos(xi) + cosh(eta)).
 
     Parameters
     ----------
@@ -72,23 +75,16 @@ def compute_jacobian_analytic(xi, eta, c):
     """
     h = compute_scale_factor(xi, eta, c)
 
-    # Analytic partial derivatives of the conformal mapping
-    # z = c * tan((xi + i*eta)/2)
-    # dz/dxi = (c/2) * sec^2((xi+i*eta)/2) (has real and imag parts)
     zeta = xi + 1j * eta
     half_zeta = zeta / 2.0
     cos2 = np.cos(half_zeta)**2
-    # dz/dzeta = c / (2 * cos^2(zeta/2))
+    # Protect against singularity
+    cos2 = np.where(np.abs(cos2) > 1e-60, cos2, 1e-60)
     dz_dzeta = c / (2.0 * cos2)
 
-    # dz/dxi = dz/dzeta * dzeta/dxi = dz/dzeta * 1
-    # dz/deta = dz/dzeta * dzeta/deta = dz/dzeta * i
-    dz_dxi = dz_dzeta
-    dz_deta = 1j * dz_dzeta
+    dz_dxi = dz_dzeta        # dzeta/dxi = 1
+    dz_deta = 1j * dz_dzeta  # dzeta/deta = i
 
-    # J = [[dx/dxi, dx/deta],
-    #      [dy/dxi, dy/deta]]
-    # Note: y includes the -gamma_shift, but shift doesn't affect derivatives
     J11 = np.real(dz_dxi)    # dx/dxi
     J12 = np.real(dz_deta)   # dx/deta
     J21 = np.imag(dz_dxi)    # dy/dxi
@@ -109,6 +105,8 @@ def compute_jacobian_numerical(x, y):
     Compute the Jacobian matrix numerically from grid coordinates.
 
     Uses central finite differences (one-sided at boundaries).
+    Derivative is with respect to index (not physical coordinate),
+    so dx/dxi ~ (x[i+1] - x[i-1]) / 2  for unit computational spacing.
 
     Parameters
     ----------
@@ -126,8 +124,10 @@ def compute_jacobian_numerical(x, y):
     # dx/dxi, dy/dxi (along i-direction, j fixed)
     J11 = np.zeros_like(x)  # dx/dxi
     J21 = np.zeros_like(y)  # dy/dxi
+    # Interior: central difference (x[i+1] - x[i-1]) / 2
     J11[:, 1:-1] = (x[:, 2:] - x[:, :-2]) / 2.0
     J21[:, 1:-1] = (y[:, 2:] - y[:, :-2]) / 2.0
+    # Boundaries: one-sided
     J11[:, 0] = x[:, 1] - x[:, 0]
     J11[:, -1] = x[:, -1] - x[:, -2]
     J21[:, 0] = y[:, 1] - y[:, 0]
@@ -175,7 +175,6 @@ def compute_metric_tensor(J11, J12, J21, J22):
     g12 = J11 * J12 + J21 * J22
     g22 = J12**2 + J22**2
 
-    # Orthogonality check: g12 should be ~0 for conformal mapping
     denom = np.sqrt(g11 * g22)
     denom = np.where(denom > 1e-30, denom, 1e-30)
     ortho_err = np.max(np.abs(g12) / denom)
@@ -226,21 +225,26 @@ def compute_christoffel_symbols(xi, eta, c):
     """
     Compute Christoffel symbols for the bipolar coordinate system.
 
-    For bipolar (orthogonal, conformal) coordinates with scale factor
-    h = c / (cosh(eta) - cos(xi)):
+    For the tan-based mapping z = c * tan(zeta/2), the scale factor is:
+        h = c / (cos(xi) + cosh(eta))
 
-        dh/dxi  = c * sin(xi) / (cosh(eta) - cos(xi))^2
-                 = h * sin(xi) / (cosh(eta) - cos(xi))
+    Partial derivatives:
+        dh/dxi  =  c * sin(xi)   / (cos(xi) + cosh(eta))^2
+                 =  h * sin(xi)   / (cos(xi) + cosh(eta))
 
-        dh/deta = -c * sinh(eta) / (cosh(eta) - cos(xi))^2
-                 = -h * sinh(eta) / (cosh(eta) - cos(xi))
+        dh/deta = -c * sinh(eta)  / (cos(xi) + cosh(eta))^2
+                 = -h * sinh(eta)  / (cos(xi) + cosh(eta))
 
-    Christoffel symbols (for orthogonal coordinates):
-        Gamma^1_{11} = (1/h) * dh/dxi
-        Gamma^1_{22} = -(1/h) * dh/dxi
-        Gamma^2_{12} = (1/h) * dh/deta   (= Gamma^2_{21})
-        Gamma^2_{22} = (1/h) * dh/deta
-        Gamma^1_{12} = (1/h) * dh/deta   (note: for conformal h1=h2=h)
+    For conformal coordinates (h1 = h2 = h), the non-zero Christoffel
+    symbols of the second kind are:
+        Gamma^1_{11} =  (1/h) * dh/dxi    = sin(xi) / D
+        Gamma^1_{22} = -(1/h) * dh/dxi    = -sin(xi) / D
+        Gamma^1_{12} =  (1/h) * dh/deta   = -sinh(eta) / D
+        Gamma^2_{11} = -(1/h) * dh/deta   = sinh(eta) / D
+        Gamma^2_{22} =  (1/h) * dh/deta   = -sinh(eta) / D
+        Gamma^2_{12} =  (1/h) * dh/dxi    = sin(xi) / D
+
+    where D = cos(xi) + cosh(eta).
 
     Parameters
     ----------
@@ -251,25 +255,44 @@ def compute_christoffel_symbols(xi, eta, c):
 
     Returns
     -------
-    dict with Christoffel symbol arrays.
+    dict with Christoffel symbol arrays and partial derivatives of h.
     """
-    denom = np.cosh(eta) - np.cos(xi)
-    h = c / denom
+    D = np.cos(xi) + np.cosh(eta)
+    D_safe = np.where(np.abs(D) > 1e-30, D, 1e-30)
+    h = c / D_safe
 
-    # Partial derivatives of h
-    dh_dxi = h * np.sin(xi) / denom
-    dh_deta = -h * np.sinh(eta) / denom
+    dh_dxi = h * np.sin(xi) / D_safe
+    dh_deta = -h * np.sinh(eta) / D_safe
 
-    # For conformal coordinates (h1 = h2 = h):
     inv_h = 1.0 / np.where(np.abs(h) > 1e-30, h, 1e-30)
 
+    # Conformal Christoffel symbols (h1 = h2 = h)
+    # Using standard formulas for orthogonal conformal coordinates:
+    #   Gamma^i_{jk} from Aris (1962) or any tensor analysis reference.
+    #
+    # For conformal coords where h1 = h2 = h:
+    #   Gamma^1_{11} =  (1/h) * dh/dxi
+    #   Gamma^1_{22} = -(1/h) * dh/dxi
+    #   Gamma^1_{12} =  (1/h) * dh/deta
+    #   Gamma^2_{11} = -(1/h) * dh/deta
+    #   Gamma^2_{22} =  (1/h) * dh/deta
+    #   Gamma^2_{12} =  (1/h) * dh/dxi
+
+    Gamma_1_11 = inv_h * dh_dxi
+    Gamma_1_22 = -inv_h * dh_dxi
+    Gamma_1_12 = inv_h * dh_deta
+    Gamma_2_11 = -inv_h * dh_deta
+    Gamma_2_22 = inv_h * dh_deta
+    Gamma_2_12 = inv_h * dh_dxi
+
     return {
+        "h": h,
         "dh_dxi": dh_dxi,
         "dh_deta": dh_deta,
-        "Gamma_xi_xi_xi": inv_h * dh_dxi,
-        "Gamma_xi_eta_eta": -inv_h * dh_dxi,
-        "Gamma_eta_xi_xi": inv_h * dh_deta,
-        "Gamma_eta_eta_eta": inv_h * dh_deta,
-        "Gamma_eta_xi_eta": inv_h * dh_dxi,   # mixed
-        "Gamma_xi_xi_eta": inv_h * dh_deta,    # mixed
+        "Gamma_1_11": Gamma_1_11,
+        "Gamma_1_22": Gamma_1_22,
+        "Gamma_1_12": Gamma_1_12,
+        "Gamma_2_11": Gamma_2_11,
+        "Gamma_2_22": Gamma_2_22,
+        "Gamma_2_12": Gamma_2_12,
     }

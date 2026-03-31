@@ -245,6 +245,11 @@ class BipolarGridGenerator:
         self.metrics = result["metrics"]
         self.quality = result["quality"]
 
+        # Update params to reflect half-domain shape
+        self._params["N_eta_actual"] = result["x"].shape[0]
+        self._params["half_domain"] = True
+        result["params"] = self._params
+
         return result
 
     def export(self, filepath, format="tecplot"):
@@ -403,8 +408,6 @@ class BipolarGridGenerator:
             "N_eta": self.N_eta,
             "stretch_xi": self.stretch_xi,
             "stretch_eta": self.stretch_eta,
-            "alpha_s": self.alpha_s,
+            "alpha_s": getattr(self, 'alpha_s', 0.5),
             "gap": self.r2 - self.r1,
-            "gap_min": self.r2 - self.r1 - self.eccentricity,
-            "gap_max": self.r2 - self.r1 + self.eccentricity,
         }

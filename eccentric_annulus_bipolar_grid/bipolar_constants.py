@@ -68,6 +68,16 @@ def compute_bipolar_constants_pdf(r1, r2, e):
     # Eq. (4c): cosh(beta) = [gamma*(1-phi^2) + (1+phi^2)] / (2*phi)
     cosh_beta = (gamma_r * (1 - phi**2) + (1 + phi**2)) / (2 * phi)
 
+    # Validate arccosh inputs (must be >= 1)
+    if cosh_alpha < 1.0:
+        raise ValueError(
+            f"cosh(alpha) = {cosh_alpha:.6f} < 1: invalid geometry "
+            f"(r1={r1}, r2={r2}, e={e})")
+    if cosh_beta < 1.0:
+        raise ValueError(
+            f"cosh(beta) = {cosh_beta:.6f} < 1: invalid geometry "
+            f"(r1={r1}, r2={r2}, e={e})")
+
     alpha_pdf = np.arccosh(cosh_alpha)
     beta_pdf = np.arccosh(cosh_beta)
 
@@ -129,7 +139,12 @@ def compute_bipolar_constants_snyder(R1, R2, epsilon):
     b = abs(shift)
 
     F = (R2**2 - R1**2 + b**2) / (2 * b)
-    M = np.sqrt(F**2 - R2**2)
+    disc = F**2 - R2**2
+    if disc < 0:
+        raise ValueError(
+            f"F^2 - R2^2 = {disc:.6e} < 0: invalid geometry "
+            f"(R1={R1}, R2={R2}, epsilon={epsilon})")
+    M = np.sqrt(disc)
 
     alpha = 0.5 * np.log((F + M) / (F - M))
     beta = 0.5 * np.log((F - b + M) / (F - b - M))
@@ -206,24 +221,35 @@ def cross_validate_constants(r1, r2, e, tol=1e-10):
             f"Snyder_alpha={sny['alpha']:.15e}, diff={diff_outer:.2e}"
         )
 
+    # Cross-check gamma_shift
+    diff_gamma = abs(pdf.get("gamma_shift", 0) - sny.get("gamma_shift", 0))
+    if diff_gamma > tol:
+        warnings.warn(
+            f"gamma_shift mismatch: PDF={pdf.get('gamma_shift', 0):.15e}, "
+            f"Snyder={sny.get('gamma_shift', 0):.15e}, diff={diff_gamma:.2e}"
+        )
+
+    # Validation summary
+    all_ok = (diff_c <= tol) and (diff_inner <= tol) and (diff_outer <= tol)
+    validation = {
+        "passed": all_ok,
+        "diff_c": diff_c,
+        "diff_inner": diff_inner,
+        "diff_outer": diff_outer,
+    }
+
+    # Return unified result using Snyder convention:
+    #   alpha = outer circle (smaller eta)
+    #   beta  = inner circle (larger eta)
     return {
-        "alpha": sny["alpha"],
-        "beta": sny["beta"],
         "c": sny["c"],
-        "gamma_shift": sny["gamma_shift"],
-        "gamma_r": pdf["gamma_r"],
-        "phi": pdf["phi"],
-        "kappa": r2 / r1,
-        "F": sny["F"],
-        "shift": sny["shift"],
-        "R1": r1,
-        "R2": r2,
-        "epsilon": epsilon,
-        "eccentricity": e,
-        "validation": {
-            "diff_c": diff_c,
-            "diff_inner_eta": diff_inner,
-            "diff_outer_eta": diff_outer,
-            "passed": max(diff_c, diff_inner, diff_outer) <= tol,
-        },
+        "alpha": sny["alpha"],       # outer circle eta (smaller)
+        "beta": sny["beta"],         # inner circle eta (larger)
+        "gamma_shift": sny.get("gamma_shift", 0.0),
+        "gamma_r": pdf.get("gamma_r", r1 / r2),
+        "phi": pdf.get("phi", epsilon),
+        "kappa": 0.0,
+        "alpha_pdf": pdf.get("alpha_pdf", sny["beta"]),
+        "beta_pdf": pdf.get("beta_pdf", sny["alpha"]),
+        "validation": validation,
     }
