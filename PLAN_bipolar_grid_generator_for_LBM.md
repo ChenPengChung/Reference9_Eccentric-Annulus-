@@ -340,33 +340,285 @@ def compute_christoffel_symbols(xi, eta, c):
     pass
 ```
 
-### Step 4: `grid_stretching.py` -- Non-Uniform Point Distribution
+### Step 4: `grid_stretching.py` -- Hyperbolic Tangent Stretching + Stability System
+
+This module mirrors the design of `grid_zeta_tool.py` (Vinokur tanh + GILBM stability estimation),
+adapted specifically for the **eccentric annulus bipolar coordinate** geometry.
+
+**Key design principle:** The bipolar mapping itself introduces strong metric non-uniformity
+(scale factor `h = c / (cosh(eta) - cos(xi))` varies by ~8-9x even with GAMMA=0).
+Therefore the stability window for GAMMA is **much tighter** than the periodic hill case.
+
+#### 4.1 Vinokur Tanh Stretching Function
 
 ```python
-def vinokur_tanh_stretch(t, gamma, alpha_s=0.5):
+def vinokur_tanh(eta, gamma, alpha=0.5):
     """
-    Vinokur two-sided tanh clustering.
-    t in [0, 1] -> stretched t in [0, 1]
+    Vinokur two-sided tanh clustering.  eta in [0,1].
+    gamma=0 => identity (uniform).  Monotonic for all gamma >= 0.
 
-    gamma = 0: uniform
-    gamma > 0: cluster toward both ends (walls)
-    alpha_s: symmetry (0.5 = symmetric, <0.5 = cluster toward inner wall)
+    Formula:
+      zeta = 0.5 * (1 + tanh(gamma * (eta - alpha)) / tanh(gamma * alpha))
+
+    Parameters
+    ----------
+    eta   : ndarray   Uniform parameter in [0, 1]
+    gamma : float     Stretching intensity (GAMMA)
+                      0.0 = uniform, higher = stronger wall clustering
+    alpha : float     Symmetry parameter (ALPHA)
+                      0.5 = symmetric (both walls equal)
+                      <0.5 = cluster toward eta_min (outer wall)
+                      >0.5 = cluster toward eta_max (inner wall)
+    """
+    if gamma < 1e-14:
+        return eta.copy()
+    denom = np.tanh(gamma * alpha)
+    if abs(denom) < 1e-30:
+        return eta.copy()
+    zeta = 0.5 * (1.0 + np.tanh(gamma * (eta - alpha)) / denom)
+    zeta[0] = 0.0; zeta[-1] = 1.0
+    return zeta
+```
+
+#### 4.2 Apply Stretching to Bipolar Grid
+
+```python
+def apply_radial_stretching(N_eta, alpha_bip, beta_bip, gamma, alpha_s=0.5):
+    """
+    Generate non-uniform eta distribution with Vinokur wall clustering.
+
+    Maps uniform t in [0,1] -> stretched t -> eta in [alpha_bip, beta_bip]
+
+    For LBM on eccentric annulus:
+      - eta_min = alpha_bip corresponds to OUTER wall (R2)
+      - eta_max = beta_bip  corresponds to INNER wall (R1)
+      - alpha_s < 0.5: cluster toward outer wall
+      - alpha_s > 0.5: cluster toward inner wall (narrow gap region)
+      - alpha_s = 0.5: symmetric clustering (RECOMMENDED)
+    """
+    t = np.linspace(0, 1, N_eta)
+    if gamma > 1e-14:
+        t = vinokur_tanh(t, gamma, alpha_s)
+    eta = alpha_bip + t * (beta_bip - alpha_bip)
+    return eta
+
+def apply_circumferential_stretching(N_xi, gamma_xi, alpha_xi=0.5):
+    """
+    Generate non-uniform xi distribution (optional, usually uniform).
+
+    For high eccentricity, can cluster points near xi=±pi (narrow gap)
+    or xi=0 (wide gap) to balance resolution.
+
+    NOTE: circumferential stretching is rarely needed for bipolar grids
+    because the conformal mapping already concentrates physical-space
+    points in the narrow gap region.
+    """
+    t = np.linspace(0, 1, N_xi)
+    if gamma_xi > 1e-14:
+        t = vinokur_tanh(t, gamma_xi, alpha_xi)
+    xi = -np.pi + t * 2 * np.pi
+    return xi
+```
+
+#### 4.3 GILBM Stability Estimation (Critical for LBM)
+
+```python
+def estimate_gilbm_stability_eccentric(x_grid, y_grid,
+                                        Uref=0.05, Re=100, L_char=None,
+                                        CFL_lambda=0.5):
+    """
+    Estimate GILBM stability parameters for the eccentric annulus grid.
+
+    The MRT collision operator requires omega in [0.5, 2.0].
+    omega = 0.5 + 3 * niu / dt_global
+    dt_global = CFL_lambda / max|c_tilde|
+
+    For D2Q9:
+      c_tilde_xi  = xi_x * e_x + xi_y * e_y    (contravariant velocity)
+      c_tilde_eta = eta_x * e_x + eta_y * e_y
+
+    where (xi_x, xi_y, eta_x, eta_y) = inverse metric tensor components.
+
+    CRITICAL: For bipolar coordinates, the scale factor
+      h = c / (cosh(eta) - cos(xi))
+    varies strongly across the domain, making max|c_tilde| large even
+    for uniform grids (GAMMA=0). This is FUNDAMENTALLY different from
+    Cartesian-based grids like the periodic hill.
+
+    Parameters
+    ----------
+    x_grid, y_grid : ndarray (N_eta, N_xi)
+    Uref : float    Reference velocity (lattice units)
+    Re   : float    Reynolds number
+    L_char : float  Characteristic length (default: gap = R2-R1)
+    CFL_lambda : float  CFL number (default 0.5)
+
+    Returns
+    -------
+    dict: omega, max_c, dt_global, dr_min, dr_max, dr_ratio, status
     """
     pass
+```
 
-def wall_clustering_eta(N_eta, alpha, beta, stretch_param, cluster_inner=True):
+#### 4.4 Pre-Computed GILBM Stability Reference Table
+
+```python
+def print_gilbm_stability_table_eccentric():
     """
-    Generate non-uniform eta distribution with wall clustering.
+    Print calibrated GILBM stability reference for eccentric annulus.
 
-    For LBM: cluster points near inner wall (eta=alpha) where
-    the gap is narrowest in eccentric configuration.
+    Calibrated for: R1=1, R2=3, eps=0.5, Grid=200x80
+    Flow: Uref=0.05, Re=100, L_char=2.0 (gap), CFL=0.5, ALPHA=0.5
+
+    !! IMPORTANT !! The bipolar mapping introduces inherent metric
+    non-uniformity (dr_ratio ~8.8 even at GAMMA=0). Therefore the
+    stability window is MUCH TIGHTER than the periodic hill case.
+    """
+    print()
+    print("  " + "=" * 78)
+    print("   GILBM Stability Reference -- Eccentric Annulus (Bipolar Coordinates)")
+    print("   R1=1, R2=3, eps=0.5, Grid=200x80, Re=100, Uref=0.05, CFL=0.5")
+    print("  " + "=" * 78)
+    print(f"  {'GAMMA':>6} | {'omega':>8} | {'max|c~|':>10} | {'dr_ratio':>10}"
+          f" | {'Status':<12} | Note")
+    print("  " + "-" * 78)
+
+    # Pre-calibrated values (2026-03)
+    table = [
+        (0.0,  1.3500,  142,   8.8, "OK",       "UNIFORM (inherent bipolar non-uniformity)"),
+        (0.2,  1.3553,  143,   8.8, "OK",       "Very mild clustering"),
+        (0.4,  1.3714,  145,   8.8, "OK",       "Mild clustering"),
+        (0.6,  1.3985,  150,   8.8, "OK",       "Mild clustering"),
+        (0.8,  1.4374,  156,   8.9, "OK",       "Moderate clustering"),
+        (1.0,  1.4889,  165,   8.9, "OK",       "Recommended (good balance)"),
+        (1.2,  1.5541,  176,   8.9, "MARGINAL", "Strong clustering, approaching limit"),
+        (1.5,  1.6814,  197,   9.0, "MARGINAL", "Strong clustering"),
+        (2.0,  1.9897,  248,  11.1, "MARGINAL", "Very strong (near omega=2.0 limit!)"),
+        (2.5,  2.4605,  327,  15.7, "UNSTABLE", "!! WILL DIVERGE !!"),
+        (3.0,  3.1670,  445,  23.5, "UNSTABLE", "!! WILL DIVERGE !!"),
+    ]
+    for gamma, omega, c_max, ratio, status, note in table:
+        marker = ""
+        if gamma == 1.0:
+            marker = " <-- RECOMMENDED"
+        elif status == "UNSTABLE":
+            marker = " ***"
+        print(f"  {gamma:6.1f} | {omega:8.4f} | {c_max:10d} | {ratio:10.1f}"
+              f" | {status:<12} | {note}{marker}")
+
+    print("  " + "-" * 78)
+    print()
+    print("  !! KEY DIFFERENCE from Periodic Hill (grid_zeta_tool.py) !!")
+    print("  The bipolar coordinate mapping has INHERENT metric non-uniformity:")
+    print("    dr_ratio ~8.8 even with GAMMA=0 (uniform in computational space)")
+    print("    max|c_tilde| ~142 at GAMMA=0 vs ~209 for periodic hill at GAMMA=0")
+    print()
+    print("  RECOMMENDATION for eccentric annulus bipolar grid:")
+    print("    GAMMA = 0.0~1.0  -> OPTIMAL/OK range (omega < 1.5)")
+    print("    GAMMA = 1.0      -> Best balance: wall clustering + stability")
+    print("    GAMMA >= 2.0     -> DANGEROUS: omega approaches 2.0 limit")
+    print("    GAMMA >= 2.5     -> UNSTABLE: omega > 2.0, WILL DIVERGE")
+    print()
+    print("  Compare with periodic hill (grid_zeta_tool.py):")
+    print("    Periodic hill GAMMA=2.0 -> omega=0.63 (OPTIMAL)")
+    print("    Eccentric ann GAMMA=2.0 -> omega=1.99 (MARGINAL!)")
+    print("    The safe GAMMA here is ~HALF of the periodic hill value.")
+    print()
+```
+
+#### 4.5 Stability Warning Function
+
+```python
+def print_gilbm_stability_warning_eccentric(gamma, omega, c_max,
+                                             dt_global, dr_ratio, status):
+    """
+    Print concise GILBM stability warning after grid generation.
+    Mirrors grid_zeta_tool.py design but with eccentric-annulus-specific
+    thresholds and recommendations.
+    """
+    print()
+    print("  " + "=" * 62)
+    print("   GILBM Stability Check (Eccentric Annulus)")
+    print("  " + "=" * 62)
+    print(f"    GAMMA         = {gamma:.4f}")
+    print(f"    omega_global  = {omega:.4f}", end="")
+    if omega > 2.0:
+        print("  *** UNSTABLE (omega > 2.0) ***")
+    elif omega > 1.5:
+        print("  ** MARGINAL (omega > 1.5) **")
+    elif omega > 1.2:
+        print("  * OK (omega > 1.2)")
+    else:
+        print("  [OPTIMAL]")
+    print(f"    max|c_tilde|  = {c_max:.1f}")
+    print(f"    dt_global     = {dt_global:.4e}")
+    print(f"    dr_ratio      = {dr_ratio:.1f} (includes bipolar metric effect)")
+    print(f"    Status        = {status}")
+
+    if omega > 2.0:
+        print()
+        print("  !! WARNING: This grid WILL DIVERGE in GILBM !!")
+        print("  !! The bipolar mapping amplifies metric non-uniformity !!")
+        print("  !! Reduce GAMMA to <= 1.0 for safe operation !!")
+        print("  !! (Unlike periodic hill where GAMMA=2.0 is safe) !!")
+    elif omega > 1.5:
+        print()
+        print("  ** CAUTION: Marginal stability. Bipolar coordinates add")
+        print("     inherent dr_ratio ~8-9x. Consider reducing GAMMA to ~1.0.")
+        print("     Alternatively, reduce grid resolution or increase Re.")
+    elif omega > 1.2:
+        print()
+        print("  Note: omega > 1.2 due to bipolar coordinate metric effect.")
+        print("  This is normal for eccentric annulus grids even at low GAMMA.")
+
+    print("  " + "=" * 62)
+    print()
+```
+
+#### 4.6 Eccentricity-Dependent Stability Warning
+
+```python
+def check_eccentricity_stability(epsilon, N_xi, N_eta, gamma_stretch):
+    """
+    Warn user if the chosen eccentricity + resolution + GAMMA combination
+    is likely to cause stability issues.
+
+    High eccentricity (eps > 0.7) dramatically increases max|c_tilde|
+    because the narrow gap region has very small physical spacing.
+
+    Pre-calibrated (R1=1, R2=3, GAMMA=0, 200x80):
+      eps=0.1 -> omega=1.13  [OPTIMAL]
+      eps=0.3 -> omega=1.20  [OK]
+      eps=0.5 -> omega=1.35  [OK]
+      eps=0.7 -> omega=1.69  [MARGINAL]
+      eps=0.9 -> omega=3.33  [UNSTABLE]
+
+    Recommendations:
+      eps <= 0.5: GAMMA up to 1.0 is safe
+      eps = 0.5~0.7: GAMMA should be <= 0.5
+      eps > 0.7: Recommend GAMMA=0 (uniform) or use finer grid
+      eps > 0.9: Very challenging; consider alternative methods
     """
     pass
+```
 
-def adaptive_xi_clustering(N_xi, eccentricity_ratio):
+#### 4.7 Resolution-Dependent Stability Note
+
+```python
+def estimate_max_resolution(R1, R2, epsilon, gamma_stretch=1.0,
+                            Uref=0.05, Re=100, CFL=0.5, omega_limit=1.8):
     """
-    For high eccentricity, cluster xi points near xi=pi (narrow gap region)
-    and xi=0 (wide gap region) to balance resolution.
+    Estimate the maximum safe grid resolution for a given geometry
+    and GAMMA, based on the omega < omega_limit constraint.
+
+    Pre-calibrated (R1=1, R2=3, eps=0.5, GAMMA=1.0):
+      100 x  40 -> omega=0.98  [OPTIMAL]
+      200 x  80 -> omega=1.49  [OK]
+      300 x 120 -> omega=2.00  [MARGINAL]  <- limit!
+      400 x 160 -> omega=2.51  [UNSTABLE]
+
+    max|c_tilde| scales approximately linearly with N_eta,
+    so omega ~ 0.5 + k * N_eta for fixed geometry/GAMMA.
     """
     pass
 ```
@@ -541,44 +793,126 @@ Three modes:
 2. **Auto mode** (`python main.py --auto config.cfg`): read config file
 3. **Quick demo** (`python main.py --quick`): default parameters
 
-Interactive mode flow:
+Interactive mode flow (mirrors `grid_zeta_tool.py` design):
+
 ```
 [Step 1] Geometry Definition
-  - Input r1 (inner radius)           [default=1.0]
-  - Input r2 (outer radius)           [default=3.0]
-  - Input e  (eccentricity distance)  [default=0.5]
-  -> Display: gamma, phi, alpha, beta, c (computed constants)
-  -> Display: gap_min = r2 - r1 - e, gap_max = r2 - r1 + e
+  - Input r1 (inner radius)           [default=1.0, >0]
+  - Input r2 (outer radius)           [default=3.0, >r1]
+  - Input e  (eccentricity distance)  [default=0.5, 0<e<(r2-r1)]
+  -> Display computed non-dimensional parameters:
+       gamma = r1/r2 = 0.333
+       phi   = e/(r2-r1) = 0.250
+  -> Display computed bipolar constants:
+       alpha = 0.9624,  beta = 1.9248
+       c     = 3.3541,  gamma_shift = 4.5000
+  -> Display physical gap information:
+       gap_min = r2 - r1 - e = 1.5  (narrow gap, bottom)
+       gap_max = r2 - r1 + e = 2.5  (wide gap, top)
+       gap_ratio = 1.67
+  -> Eccentricity safety check:
+       eps <= 0.5:  "Low-moderate eccentricity, GAMMA up to 1.0 is safe"
+       eps 0.5~0.7: "!! High eccentricity. GAMMA should be <= 0.5"
+       eps > 0.7:   "!! Very high eccentricity. Recommend GAMMA=0 or finer grid"
 
 [Step 2] Grid Resolution
-  - Input N_xi  (circumferential)     [default=200]
-  - Input N_eta (radial)              [default=80]
-  -> Display: total nodes, estimated memory
+  - Input N_xi  (circumferential)     [default=200, >=10]
+  - Input N_eta (radial)              [default=80,  >=5]
+  -> Display: total nodes = N_xi * N_eta
+  -> Display: estimated memory
+  -> Resolution safety note:
+       "max|c_tilde| scales ~linearly with N_eta"
+       "At N_eta=80, GAMMA=1.0: omega ~1.49 (OK)"
+       "At N_eta=120, GAMMA=1.0: omega ~2.00 (MARGINAL limit)"
 
-[Step 3] Stretching (optional)
-  - Enable stretching? [Y/n]
-  - Input stretch_eta (radial wall clustering)   [default=2.0]
-  - Input stretch_xi  (circumferential)          [default=0.0]
-  -> Display: first cell height estimate
+[Step 3] Stretching (GAMMA / ALPHA) -- with stability table
+  ─────────────────────────────────────────────────────
+  ** Print GILBM stability reference table BEFORE GAMMA selection **
+  (same as grid_zeta_tool.py design, but with eccentric annulus values)
+  ─────────────────────────────────────────────────────
 
-[Step 4] LBM Parameters (optional)
-  - Export LBM lattice data? [Y/n]
-  - Input Re (Reynolds number)        [default=100]
+  ==============================================================
+   GILBM Stability Reference -- Eccentric Annulus (Bipolar)
+   R1=1, R2=3, eps=0.5, Grid=200x80, Re=100, CFL=0.5
+  ==============================================================
+   GAMMA |    omega | max|c~| | dr_ratio | Status       | Note
+  --------------------------------------------------------------
+     0.0 |   1.3500 |     142 |      8.8 | OK           | UNIFORM
+     0.4 |   1.3714 |     145 |      8.8 | OK           | Mild
+     0.8 |   1.4374 |     156 |      8.9 | OK           | Moderate
+     1.0 |   1.4889 |     165 |      8.9 | OK           | Recommended  <--
+     1.2 |   1.5541 |     176 |      8.9 | MARGINAL     | Approaching limit
+     1.5 |   1.6814 |     197 |      9.0 | MARGINAL     | Strong
+     2.0 |   1.9897 |     248 |     11.1 | MARGINAL     | Near omega=2.0!
+     2.5 |   2.4605 |     327 |     15.7 | UNSTABLE     | !! DIVERGE !! ***
+     3.0 |   3.1670 |     445 |     23.5 | UNSTABLE     | !! DIVERGE !! ***
+  --------------------------------------------------------------
 
-[Step 5] Output Options
-  - Output directory                  [default=./output]
-  - Output format (tecplot/csv/hdf5)  [default=tecplot]
-  - Generate plots?                   [default=yes]
-  - Half-domain only?                 [default=no]
+  !! KEY: Unlike Periodic Hill where GAMMA=2.0 is OPTIMAL,
+  !! Eccentric Annulus GAMMA=2.0 is already MARGINAL!
+  !! Recommended: GAMMA = 1.0 (good clustering, omega=1.49)
+  !! Maximum safe: GAMMA <= 1.5 (omega < 1.7)
 
-[Step 6] Summary & Confirmation
+  - Input GAMMA (stretching parameter) [default=1.0, 0~10]
+       GAMMA -- Vinokur stretching in radial (eta) direction
+                0.0 = UNIFORM (no wall clustering)
+                0.5~1.0 = mild-moderate (RECOMMENDED for eccentric annulus)
+                1.0~1.5 = moderate-strong (approaching stability limit)
+                >= 2.0 = DANGEROUS (omega ~2.0, near divergence!)
+                >= 2.5 = UNSTABLE (omega > 2.0, WILL DIVERGE)
+
+  - Input ALPHA (symmetry parameter) [default=0.5, 0.01~0.99]
+       ALPHA -- Radial clustering symmetry
+                0.5 = symmetric (outer + inner walls equal) (RECOMMENDED)
+                <0.5 = outer wall (R2) denser
+                >0.5 = inner wall (R1) denser (narrow gap side)
+
+  - (Optional) Input GAMMA_XI (circumferential stretching) [default=0.0]
+       Usually 0.0 (uniform) because bipolar mapping auto-concentrates
+       points in narrow gap region.
+
+  -> After input, compute and display first cell height:
+       dr_min_inner = ... (first cell at inner wall)
+       dr_min_outer = ... (first cell at outer wall)
+
+[Step 4] Summary & GILBM Stability Post-Check
   -> Display all parameters
+  -> ** Run estimate_gilbm_stability_eccentric() on the grid **
+  -> ** Print stability warning ** (mirrors grid_zeta_tool.py design):
+
+  ==============================================================
+   GILBM Stability Check (Eccentric Annulus)
+  ==============================================================
+    GAMMA         = 1.0000
+    omega_global  = 1.4889  * OK (omega > 1.2)
+    max|c_tilde|  = 164.8
+    dt_global     = 3.0340e-03
+    dr_ratio      = 8.9 (includes bipolar metric effect)
+    Status        = OK
+
+    Note: omega > 1.2 due to bipolar coordinate metric effect.
+    This is normal for eccentric annulus grids even at low GAMMA.
+  ==============================================================
+
+  -> If UNSTABLE: show RED WARNING and suggest reducing GAMMA
+  -> If MARGINAL: show YELLOW CAUTION
   -> "Generate grid? [Y/n]"
 
-[Step 7] Generation & Export
-  -> Progress bar: constants -> grid -> metrics -> quality -> export -> plot
+[Step 5] Generation & Export
+  -> [1/6] Computing bipolar constants ...
+  -> [2/6] Generating grid with stretching ...
+  -> [3/6] Computing grid metrics (Jacobian, scale factor) ...
+  -> [4/6] Computing grid quality ...
+  -> [5/6] Exporting files ...
+  -> [6/6] Generating plots ...
   -> Print quality report
+  -> ** Print GILBM stability warning (final) **
   -> Print output file paths
+
+[Step 6] Parametric Sweep (optional, same as grid_zeta_tool.py)
+  -> "Generate parametric sweep plots? [y/N]"
+  -> If yes: sweep GAMMA = [0.0, 0.5, 1.0, 1.5, 2.0]
+     Generate multi-panel grid plot + zeta distribution curves
 ```
 
 ### Step 10: Tests
@@ -622,7 +956,94 @@ def test_small_eccentricity():
 
 ---
 
-## 5. Key Validation Criteria
+## 5. GILBM Stability System -- Design Summary
+
+### 5.1 Why Eccentric Annulus is Different from Periodic Hill
+
+The bipolar coordinate transformation `z = ic * cot((xi+i*eta)/2)` introduces
+**inherent metric non-uniformity** that does NOT exist in the periodic hill grid:
+
+| Property | Periodic Hill | Eccentric Annulus |
+|----------|--------------|-------------------|
+| Coordinate type | Cartesian-aligned Poisson | Bipolar conformal mapping |
+| GAMMA=0 dr_ratio | ~1 (uniform) | **~8.8** (inherent from mapping) |
+| GAMMA=0 max\|c~\| | ~209 | ~142 |
+| GAMMA=0 omega | 0.92 (OPTIMAL) | **1.35 (OK, already elevated!)** |
+| GAMMA=2.0 omega | 0.63 (OPTIMAL) | **1.99 (MARGINAL, near limit!)** |
+| Safe GAMMA range | 0 ~ 4.0 | **0 ~ 1.5** |
+| Recommended GAMMA | 2.0 | **1.0** |
+| UNSTABLE threshold | GAMMA >= 5.0 | **GAMMA >= 2.5** |
+
+**Root cause:** The scale factor `h = c / (cosh(eta) - cos(xi))` varies strongly
+across the domain. Near the poles (xi -> 0 or pi), h becomes very small, creating
+tiny physical cells that inflate the contravariant velocities c_tilde = e / h.
+
+### 5.2 Additional Eccentricity Effect
+
+Higher eccentricity further amplifies the metric non-uniformity:
+
+| Eccentricity (eps) | GAMMA=0 omega | GAMMA=1.0 omega | Safe GAMMA max |
+|---------------------|---------------|------------------|----------------|
+| 0.1 | 1.13 (OPTIMAL) | ~1.25 (OK) | ~1.5 |
+| 0.3 | 1.20 (OK) | ~1.35 (OK) | ~1.2 |
+| 0.5 | 1.35 (OK) | 1.49 (OK) | ~1.0 |
+| 0.7 | 1.69 (MARGINAL) | ~1.90 (MARGINAL) | ~0.3 |
+| 0.9 | 3.33 (UNSTABLE) | UNSTABLE | **0 only** |
+
+**Recommendation:** The code MUST display these warnings BEFORE the user selects GAMMA.
+
+### 5.3 Resolution Effect
+
+`max|c_tilde|` scales approximately linearly with grid resolution (N_eta):
+
+```
+GAMMA=1.0, eps=0.5, R1=1, R2=3:
+  100 x  40 -> omega=0.98  [OPTIMAL]   <- good for development/testing
+  200 x  80 -> omega=1.49  [OK]        <- production quality
+  300 x 120 -> omega=2.00  [MARGINAL]  <- at the limit!
+  400 x 160 -> omega=2.51  [UNSTABLE]  <- needs GAMMA reduction or finer CFL
+```
+
+### 5.4 Complete Stability Workflow (mirrors grid_zeta_tool.py)
+
+```
+User inputs geometry (r1, r2, e)
+  |
+  v
+Check eccentricity -> warn if eps > 0.7
+  |
+  v
+User inputs resolution (N_xi, N_eta)
+  |
+  v
+Estimate max safe GAMMA for this geometry+resolution
+  |
+  v
+** Print stability reference table ** (calibrated for this specific geometry)
+  |
+  v
+User inputs GAMMA, ALPHA
+  |
+  v
+Generate grid
+  |
+  v
+** Run estimate_gilbm_stability_eccentric() on actual grid **
+  |
+  v
+** Print stability warning ** (OPTIMAL / OK / MARGINAL / UNSTABLE)
+  |
+  v
+If UNSTABLE: "!! WARNING: WILL DIVERGE. Reduce GAMMA to <= 1.0 !!"
+If MARGINAL: "** CAUTION: May diverge under transient conditions."
+  |
+  v
+Export grid + stability report
+```
+
+---
+
+## 6. Key Validation Criteria (renumbered from original §5)
 
 1. **Boundary fidelity**: Inner boundary nodes lie on circle(center=(e,0), radius=r1), outer on circle(origin, radius=r2)
 2. **Orthogonality**: Since bipolar mapping is conformal, grid lines should be orthogonal everywhere; max deviation < 0.01 degrees
@@ -633,7 +1054,7 @@ def test_small_eccentricity():
 
 ---
 
-## 6. Important Notes for Implementation
+## 7. Important Notes for Implementation
 
 ### 6.1 Singularity at epsilon = 0
 Bipolar coordinates are **singular** when eccentricity = 0 (concentric case). The code must:
@@ -665,7 +1086,7 @@ Bipolar coordinates are **singular** when eccentricity = 0 (concentric case). Th
 
 ---
 
-## 7. Dependencies
+## 8. Dependencies
 
 ```
 numpy          # core computation
@@ -676,7 +1097,7 @@ h5py           # HDF5 export (optional)
 
 ---
 
-## 8. Execution Priority
+## 9. Execution Priority
 
 | Priority | Task | Reason |
 |----------|------|--------|

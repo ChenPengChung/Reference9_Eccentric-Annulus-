@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -lh /c/Users/88697.CHENPENGCHUNG12/Desktop/Reference9_Eccentric-Annulus-/*.pdf)",
+      "Bash(ls -lh /c/Users/88697.CHENPENGCHUNG12/Desktop/Reference9_Eccentric-Annulus-/*.ipynb)",
+      "Bash(find /c/Users/88697.CHENPENGCHUNG12/Desktop/Reference9_Eccentric-Annulus- -type f -not -path */.git/* -not -path */__pycache__/* -not -name *.pyc)",
+      "Bash(python -m pytest eccentric_annulus_bipolar_grid/tests/ -v)",
+      "Bash(python -m eccentric_annulus_bipolar_grid --quick)"
+    ]
+  }
+}
